@@ -228,7 +228,7 @@ class Plugin:
         # Don't raise NotImplementedError, IDE complains
         raise RuntimeError("source_finished called on a regular plugin")
 
-    def iter(self, iters, executor=None):
+    def iter(self, iters, executor=None, backpressure=None):
         """Iterate over dependencies and yield results
 
         :param iters: dict with iterators over dependencies
@@ -304,6 +304,7 @@ class Plugin:
                             t=this_chunk_end,
                             allow_early_split=True)
 
+
                 # If any of the inputs were trimmed due to early splits,
                 # trim the others too.
                 # In very hairy cases this can take multiple passes.
@@ -332,7 +333,11 @@ class Plugin:
                 inputs_merged = {
                     kind: strax.Chunk.merge([inputs[d] for d in deps_of_kind])
                     for kind, deps_of_kind in self.dependencies_by_kind().items()}
-
+            
+            # wait for backpressure to go down if exists
+            if backpressure is not None:
+                next(backpressure)
+                
             # Submit the computation
             # print(f"{self} calling with {inputs_merged}")
             if self.parallel and executor is not None:
@@ -494,11 +499,11 @@ class OverlapWindowPlugin(Plugin):
         """Return the required window size in nanoseconds"""
         raise NotImplementedError
 
-    def iter(self, iters, executor=None):
+    def iter(self, iters, executor=None, backpressure=None):
         # Keep one chunk in reserve, since we have to do something special
         # if we see the last chunk.
         last_result = None
-        for x in super().iter(iters, executor=executor):
+        for x in super().iter(iters, executor=executor, backpressure=backpressure):
             if last_result is not None:
                 yield last_result
             last_result = x

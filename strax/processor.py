@@ -8,6 +8,7 @@ import signal
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 
 import numpy as np
 
@@ -22,6 +23,25 @@ except ImportError:
     # This is allowed to fail, it only crashes if allow_shm = True
     SHMExecutor = None
     pass
+
+
+class BackPressure:
+    def __init__(self, semaphore):
+        self._sem = semaphore
+
+    def result_reader(self, results):
+        for result in results:
+            try:
+                self._sem.release()
+            except:
+                pass
+            yield result
+
+    def iter(self):
+        while True:
+            self._sem.acquire()
+            yield
+
 
 
 @export
@@ -48,6 +68,7 @@ class ThreadedMailboxProcessor:
                  allow_rechunk=True, allow_shm=False,
                  allow_multiprocess=False,
                  max_workers=None,
+                 max_pipelines=10,
                  max_messages=4,
                  timeout=60):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -103,12 +124,26 @@ class ThreadedMailboxProcessor:
             self.mailboxes[d].add_sender(
                 loader(executor=self.thread_executor),
                 name=f'load:{d}')
+        ps = list(components.plugins.values())
+        if ps:
+            tree_root = ps[int(np.argmin([len(p.depends_on) for p in ps]))]
+        else:
+            tree_root = None
+        # add backpressure
+        if max_pipelines:
+            self._bp = BackPressure(multiprocessing.BoundedSemaphore(max_pipelines))
+            
+        else:
+            self._bp = None
 
         multi_output_seen = []
         for d, p in components.plugins.items():
             if p in multi_output_seen:
                 continue
-
+            if max_pipelines and p is tree_root:
+                backpressure = self._bp.iter()
+            else:
+                backpressure = None
             executor = None
             if p.parallel == 'process':
                 executor = self.process_executor
@@ -125,7 +160,7 @@ class ThreadedMailboxProcessor:
                     p.iter(
                         iters={dep: self.mailboxes[dep].subscribe()
                                for dep in p.depends_on},
-                        executor=executor),
+                        executor=executor, backpressure=backpressure),
                     name=f'divide_outputs:{d}')
 
                 self.mailboxes[mname].add_reader(
@@ -138,7 +173,7 @@ class ThreadedMailboxProcessor:
                     p.iter(
                         iters={dep: self.mailboxes[dep].subscribe()
                                for dep in p.depends_on},
-                        executor=executor),
+                        executor=executor, backpressure=backpressure),
                     name=f'build:{d}')
 
         for d, savers in components.savers.items():
@@ -190,6 +225,8 @@ class ThreadedMailboxProcessor:
     def iter(self):
         target = self.components.targets[0]
         final_generator = self.mailboxes[target].subscribe()
+        if self._bp is not None:
+            final_generator = self._bp.result_reader(final_generator)
 
         self.log.debug("Starting threads")
         for m in self.mailboxes.values():
