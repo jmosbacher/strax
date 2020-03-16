@@ -26,17 +26,18 @@ except ImportError:
 
 
 class BackPressure:
-    def __init__(self, semaphore):
+    def __init__(self, semaphore, ratio:int=1):
         self._sem = semaphore
+        self._ratio = ratio
 
     def result_reader(self, results):
         for result in results:
             try:
-                self._sem.release()
+                for _ in range(self._ratio):
+                    self._sem.release()
             except:
                 pass
-            yield result
-
+            
     def iter(self):
         while True:
             self._sem.acquire()
@@ -74,7 +75,7 @@ class ThreadedMailboxProcessor:
                  allow_multiprocess=False,
                  allow_lazy=True,
                  max_workers=None,
-                 max_pipelines=10,
+                 max_pipelines=4,
                  max_messages=4,
                  timeout=60):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -133,15 +134,13 @@ class ThreadedMailboxProcessor:
             self.mailboxes[d].add_sender(
                 loader(executor=self.thread_executor),
                 name=f'load:{d}')
-        ps = list(components.plugins.values())
-        if ps:
-            tree_root = ps[int(np.argmin([len(p.depends_on) for p in ps]))]
-        else:
-            tree_root = None
+        
         # add backpressure
         if max_pipelines:
             self._bp = BackPressure(multiprocessing.BoundedSemaphore(max_pipelines))
-            
+            self.mailboxes["backpressure"].add_sender(self._bp.iter())
+            target = self.components.targets[0]
+            self.mailboxes[target].add_reader(self._bp.result_reader)
         else:
             self._bp = None
 
@@ -149,16 +148,17 @@ class ThreadedMailboxProcessor:
         for d, p in components.plugins.items():
             if p in multi_output_seen:
                 continue
-            if max_pipelines and p is tree_root:
-                backpressure = self._bp.iter()
-            else:
-                backpressure = None
+            
             executor = None
             if p.parallel == 'process':
                 executor = self.process_executor
             elif p.parallel:
                 executor = self.thread_executor
 
+            iters={dep: self.mailboxes[dep].subscribe()
+                               for dep in p.depends_on}
+            if not iters and max_pipelines:
+                iters["backpressure"] = self.mailboxes["backpressure"].subscribe()
             if p.multi_output:
                 multi_output_seen.append(p)
 
@@ -169,7 +169,7 @@ class ThreadedMailboxProcessor:
                     p.iter(
                         iters={dep: self.mailboxes[dep].subscribe()
                                for dep in p.depends_on},
-                        executor=executor, backpressure=backpressure),
+                        executor=executor),
                     name=f'divide_outputs:{d}')
 
                 self.mailboxes[mname].add_reader(
@@ -180,9 +180,8 @@ class ThreadedMailboxProcessor:
             else:
                 self.mailboxes[d].add_sender(
                     p.iter(
-                        iters={dep: self.mailboxes[dep].subscribe()
-                               for dep in p.depends_on},
-                        executor=executor, backpressure=backpressure),
+                        ,
+                        executor=executor),
                     name=f'build:{d}')
 
         dtypes_built = {d: p
@@ -239,9 +238,7 @@ class ThreadedMailboxProcessor:
     def iter(self):
         target = self.components.targets[0]
         final_generator = self.mailboxes[target].subscribe()
-        if self._bp is not None:
-            final_generator = self._bp.result_reader(final_generator)
-
+  
         self.log.debug("Starting threads")
         for m in self.mailboxes.values():
             m.start()
