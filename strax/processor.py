@@ -134,16 +134,8 @@ class ThreadedMailboxProcessor:
             self.mailboxes[d].add_sender(
                 loader(executor=self.thread_executor),
                 name=f'load:{d}')
-        
-        # add backpressure
-        if max_pipelines:
-            self._bp = BackPressure(multiprocessing.BoundedSemaphore(max_pipelines))
-            self.mailboxes["backpressure"].add_sender(self._bp.iter())
-            target = self.components.targets[0]
-            self.mailboxes[target].add_reader(self._bp.result_reader)
-        else:
-            self._bp = None
-
+            
+        target = self.components.targets[0]
         multi_output_seen = []
         for d, p in components.plugins.items():
             if p in multi_output_seen:
@@ -155,10 +147,15 @@ class ThreadedMailboxProcessor:
             elif p.parallel:
                 executor = self.thread_executor
 
-            iters={dep: self.mailboxes[dep].subscribe()
+            iters = {dep: self.mailboxes[dep].subscribe()
                                for dep in p.depends_on}
+
+            # if no dependencies exist, add backpressure
             if not iters and max_pipelines:
-                iters["backpressure"] = self.mailboxes["backpressure"].subscribe()
+                backpressure = BackPressure(multiprocessing.BoundedSemaphore(max_pipelines))
+                iters["backpressure"] = backpressure.iter()
+                self.mailboxes[target].add_reader(backpressure.result_reader)
+
             if p.multi_output:
                 multi_output_seen.append(p)
 
@@ -167,8 +164,7 @@ class ThreadedMailboxProcessor:
                 mname = p.__class__.__name__ + '_divide_outputs'
                 self.mailboxes[mname].add_sender(
                     p.iter(
-                        iters={dep: self.mailboxes[dep].subscribe()
-                               for dep in p.depends_on},
+                        iters=iters,
                         executor=executor),
                     name=f'divide_outputs:{d}')
 
@@ -180,7 +176,7 @@ class ThreadedMailboxProcessor:
             else:
                 self.mailboxes[d].add_sender(
                     p.iter(
-                        ,
+                        iters=iters,
                         executor=executor),
                     name=f'build:{d}')
 
