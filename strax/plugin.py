@@ -36,6 +36,27 @@ class InputTimeoutExceeded(Exception):
 class PluginGaveWrongOutput(Exception):
     pass
 
+def align_chunks(x, y):
+    print("aligning chunk ",y[0])
+    input_buffer = list(x)
+    new_chunks = list(y)
+    if new_chunks[0]: 
+        for i, chunk in enumerate(new_chunks[1:]):
+            input_buffer[i+1] = strax.Chunk.concatenate(
+                    [input_buffer[i+1], chunk])
+    else:
+        input_buffer = list(y)
+        
+    _end = min([x.end for x in input_buffer[1:]])
+    print(f"end of chunk {new_chunks[0]} set to {_end}")
+    output = list(new_chunks)
+    new_buffer = list(new_chunks)
+    for i, chunk in enumerate(input_buffer[1:]):
+        output[i+1], new_buffer[i+1] = chunk.split(
+                                        t=_end,
+                                        allow_early_split=True)
+    return tuple(new_buffer), tuple(output)
+
 
 @export
 class Plugin:
@@ -495,6 +516,33 @@ class Plugin:
     def compute(self, **kwargs):
         raise NotImplementedError
 
+    def stream_compute(self, args):
+        # print("Computing ", p)
+        # print("args: ", args)
+        kwargs = {"chunk_i": args[0]}
+        for chunk in args[1:]:
+            if chunk.data_type in self.depends_on:
+                kwargs[chunk.data_type] = chunk
+        # print("arg keys: ", kwargs.keys())
+
+        inputs_merged = {kind: strax.Chunk.merge([kwargs[d] for d in deps_of_kind])
+                            for kind, deps_of_kind in self.dependencies_by_kind().items()}
+        # print("Inputs merged: ", inputs_merged.keys())
+
+        result = self.do_compute(chunk_i=kwargs["chunk_i"], **inputs_merged)
+        if not isinstance(result, dict):
+            result = {result.data_type: result}
+        # print("result keys: ", result.keys())
+        result["chunk_i"] = kwargs["chunk_i"]
+        # print(result.keys())
+        return result
+
+    def stream(self, *upstreams):
+        import streamz
+        stream = streamz.zip(*upstreams, stream_name="Merge dependecies")\
+                            .accumulate(align_chunks, returns_state=True, start=(0,), stream_name="Align by Time")\
+                            .map(self.stream_compute, stream_name=str(self))
+        return stream
 
 ##
 # Special plugins
