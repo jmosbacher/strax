@@ -704,7 +704,7 @@ class Context:
         return time_range
 
     def get_iter(self, run_id: str,
-                 targets, save=tuple(), max_workers=None,
+                 targets, save=tuple(), max_workers=None,  max_pipelines=None,
                  time_range=None,
                  seconds_range=None,
                  time_within=None,
@@ -761,6 +761,7 @@ class Context:
         for result in strax.continuity_check(strax.ThreadedMailboxProcessor(
                 components,
                 max_workers=max_workers,
+                max_pipelines=max_pipelines,
                 allow_shm=self.context_config['allow_shm'],
                 allow_multiprocess=self.context_config['allow_multiprocess'],
                 allow_rechunk=self.context_config['allow_rechunk'],
@@ -846,7 +847,7 @@ class Context:
             pass
 
     def get_array(self, run_id: ty.Union[str, tuple, list],
-                  targets, save=tuple(), max_workers=None,
+                  targets, save=tuple(), max_workers=None, max_pipelines=None,
                   **kwargs) -> np.ndarray:
         """Compute target for run_id and return as numpy array
         {get_docs}
@@ -854,7 +855,7 @@ class Context:
         run_ids = strax.to_str_tuple(run_id)
         if len(run_ids) > 1:
             results = strax.multi_run(
-                self.get_array, run_ids, targets=targets,
+                self.get_array, run_ids, targets=targets, 
                 save=save, max_workers=max_workers, **kwargs)
         else:
             source = self.get_iter(
@@ -862,6 +863,7 @@ class Context:
                 targets,
                 save=save,
                 max_workers=max_workers,
+                max_pipelines=max_pipelines,
                 **kwargs)
             results = [x.data for x in source]
         return np.concatenate(results)

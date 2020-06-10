@@ -72,7 +72,7 @@ class ThreadedMailboxProcessor:
                  allow_multiprocess=False,
                  allow_lazy=True,
                  max_workers=None,
-                 max_pipelines=4,
+                 max_pipelines=None,
                  max_messages=4,
                  timeout=60):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -165,7 +165,7 @@ class ThreadedMailboxProcessor:
                 backpressure = BackPressure(multiprocessing.BoundedSemaphore(max_pipelines))
                 iters["backpressure"] = backpressure.iter()
                 self.mailboxes[target].add_reader(backpressure.result_reader)
-
+                p.depends_on += ("backpressure",)
             if p.multi_output:
                 multi_output_seen.append(p)
 
