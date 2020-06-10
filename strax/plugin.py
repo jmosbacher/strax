@@ -37,7 +37,7 @@ class PluginGaveWrongOutput(Exception):
     pass
 
 def align_chunks(x, y):
-    print("aligning chunk ",y[0])
+    # print("aligning chunk ",y[0])
     input_buffer = list(x)
     new_chunks = list(y)
     if new_chunks[0]: 
@@ -48,7 +48,7 @@ def align_chunks(x, y):
         input_buffer = list(y)
         
     _end = min([x.end for x in input_buffer[1:]])
-    print(f"end of chunk {new_chunks[0]} set to {_end}")
+    # print(f"end of chunk {new_chunks[0]} set to {_end}")
     output = list(new_chunks)
     new_buffer = list(new_chunks)
     for i, chunk in enumerate(input_buffer[1:]):
