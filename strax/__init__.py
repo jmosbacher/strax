@@ -21,6 +21,7 @@ from .mailbox import *
 from .processor import *
 from .context import *
 from .run_selection import *
+from .streamz import *
 
 from .io import *
 

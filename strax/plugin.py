@@ -36,27 +36,41 @@ class InputTimeoutExceeded(Exception):
 class PluginGaveWrongOutput(Exception):
     pass
 
-def align_chunks(x, y):
+def align_chunks(x, y, **kwargs):
     # print("aligning chunk ",y[0])
-    input_buffer = list(x)
+    # chunk_i = kwargs.get("chunk_i", None)
+    chunk_i, input_buffer = x[0], list(x[1:])
+    # input_buffer = list(x)
     new_chunks = list(y)
-    if new_chunks[0]: 
-        for i, chunk in enumerate(new_chunks[1:]):
-            input_buffer[i+1] = strax.Chunk.concatenate(
-                    [input_buffer[i+1], chunk])
+    if chunk_i:
+        for i, chunk in enumerate(new_chunks):
+            input_buffer[i] = strax.Chunk.concatenate(
+                    [input_buffer[i], chunk])
     else:
         input_buffer = list(y)
-        
-    _end = min([x.end for x in input_buffer[1:]])
+
+    buffer = list(input_buffer)
+    _start = max([x.start for x in input_buffer])
+    for _start in range(_start, _start+1000000, 1000):
+        for i, chunk in enumerate(input_buffer):
+            _, buffer[i] = chunk.split(t=_start,
+                                        allow_early_split=True)
+        if len(set([x.start for x in buffer]))==1:
+            input_buffer=buffer
+            break
+
+    _end = min([x.end for x in input_buffer])
     # print(f"end of chunk {new_chunks[0]} set to {_end}")
     output = list(new_chunks)
     new_buffer = list(new_chunks)
-    for i, chunk in enumerate(input_buffer[1:]):
-        output[i+1], new_buffer[i+1] = chunk.split(
-                                        t=_end,
-                                        allow_early_split=True)
-    return tuple(new_buffer), tuple(output)
-
+    for _end in range(_end, _end-1000000, -1000):
+        for i, chunk in enumerate(input_buffer):
+            output[i], new_buffer[i] = chunk.split(
+                                            t=_end,
+                                            allow_early_split=True)
+        if len(set([x.end for x in output]))==1:
+            break
+    return tuple([chunk_i+1]+new_buffer), tuple([chunk_i]+output)
 
 @export
 class Plugin:
@@ -516,32 +530,34 @@ class Plugin:
     def compute(self, **kwargs):
         raise NotImplementedError
 
-    def stream_compute(self, args):
-        # print("Computing ", p)
-        # print("args: ", args)
-        kwargs = {"chunk_i": args[0]}
+    def stream_compute(self, args, **kwargs):
+        # kwargs = {"chunk_i": kwargs.get("chunk_i", None)}
+        chunk_i = args[0]
+        # print(kwargs["chunk_i"])
         for chunk in args[1:]:
-            if chunk.data_type in self.depends_on:
+            if (chunk is not None) and (chunk.data_type in self.depends_on):
                 kwargs[chunk.data_type] = chunk
-        # print("arg keys: ", kwargs.keys())
 
         inputs_merged = {kind: strax.Chunk.merge([kwargs[d] for d in deps_of_kind])
                             for kind, deps_of_kind in self.dependencies_by_kind().items()}
-        # print("Inputs merged: ", inputs_merged.keys())
 
-        result = self.do_compute(chunk_i=kwargs["chunk_i"], **inputs_merged)
+        result = self.do_compute(chunk_i=chunk_i, **inputs_merged)
         if not isinstance(result, dict):
             result = {result.data_type: result}
-        # print("result keys: ", result.keys())
-        result["chunk_i"] = kwargs["chunk_i"]
-        # print(result.keys())
+
         return result
 
-    def stream(self, *upstreams):
+    def stream(self, *upstreams, dask=None, buffer=5):
         import streamz
+        if dask:
+            dask = self.parallel
+        
         stream = streamz.zip(*upstreams, stream_name="Merge dependecies")\
-                            .accumulate(align_chunks, returns_state=True, start=(0,), stream_name="Align by Time")\
-                            .map(self.stream_compute, stream_name=str(self))
+                        .accumulate(align_chunks, returns_state=True, start=(0,), stream_name="Align by Time")
+        if dask:
+            stream = stream.scatter().map(self.stream_compute).buffer(buffer).gather()
+        else:
+            stream = stream.map(self.stream_compute)
         return stream
 
 ##
