@@ -104,6 +104,8 @@ class Chunk:
         return self.end - self.start
 
     def _mbs(self):
+        if not self.duration:
+            return float("nan")
         return (self.nbytes / 1e6) / (self.duration / 1e9)
 
     def split(self,
@@ -228,6 +230,7 @@ class Chunk:
         prev_end = 0
         for c in chunks:
             if c.start < prev_end:
+
                 raise ValueError(
                     "Attempt to concatenate overlapping or "
                     f"out-of-order chunks: {chunks} ")
@@ -317,3 +320,39 @@ def split_array(data, t, allow_early_split=False):
         t = min(data[splittable_i]['time'], t)
 
     return data[:splittable_i], data[splittable_i:], t
+
+@export
+@numba.njit(cache=True, nogil=True)
+def best_split_time(starttimes, endtimes, t):
+    latest_end_seen = -1
+    splittable_i = 0
+    i_first_beyond = -1
+    if t>endtimes.max():
+        return t
+    for i, time in enumerate(starttimes):
+        if time >= latest_end_seen:
+            splittable_i = i
+        if time >= t:
+            i_first_beyond = i
+            break
+        latest_end_seen = max(latest_end_seen,
+                              endtimes[i])
+        if latest_end_seen > t:
+            # Cannot split anywhere after this
+            break
+    else:
+        if latest_end_seen <= t:
+            return t
+    if (splittable_i != i_first_beyond or
+            latest_end_seen > t):
+        t = min(starttimes[splittable_i], t)
+    return t
+
+@export
+def find_splittable_end(chunks):
+    starttimes = np.concatenate([c.data['time'] for c in chunks])
+    ordering = np.argsort(starttimes)[::-1]
+    starttimes = starttimes[ordering]
+    endtimes = np.concatenate([strax.endtime(c.data) for c in chunks])[ordering]
+    t = min([c.end for c in chunks])
+    return best_split_time(starttimes, endtimes, t)

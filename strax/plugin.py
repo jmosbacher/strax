@@ -12,6 +12,7 @@ import time
 import typing
 
 from immutabledict import immutabledict
+from collections import defaultdict
 import numpy as np
 
 import strax
@@ -36,41 +37,38 @@ class InputTimeoutExceeded(Exception):
 class PluginGaveWrongOutput(Exception):
     pass
 
-def align_chunks(x, y, **kwargs):
-    # print("aligning chunk ",y[0])
-    # chunk_i = kwargs.get("chunk_i", None)
-    chunk_i, input_buffer = x[0], list(x[1:])
-    # input_buffer = list(x)
-    new_chunks = list(y)
-    if chunk_i:
-        for i, chunk in enumerate(new_chunks):
-            input_buffer[i] = strax.Chunk.concatenate(
-                    [input_buffer[i], chunk])
-    else:
-        input_buffer = list(y)
+def merge_by_kind(chunks):
+    by_kind = defaultdict(list)
+    for chunk in chunks:
+        by_kind[chunk.data_kind].append(chunk)
+    merged = {data_kind: strax.Chunk.merge(chunks) for data_kind, chunks in by_kind.items()}
+    return merged
 
-    buffer = list(input_buffer)
-    _start = max([x.start for x in input_buffer])
-    for _start in range(_start, _start+1000000, 1000):
-        for i, chunk in enumerate(input_buffer):
-            _, buffer[i] = chunk.split(t=_start,
-                                        allow_early_split=True)
-        if len(set([x.start for x in buffer]))==1:
-            input_buffer=buffer
-            break
+def align_chunks(input_buffer, chunks, **kwargs):
+    # input_buffer = dict(input_buffer)
+    input_buffer = list(input_buffer)
+    chunks = list(chunks)
+    new_buffer = []
+    for i,chunk in enumerate(chunks):
+        new_buffer.append(
+            strax.Chunk.concatenate(
+                [input_buffer[i], chunk])
+        )
+    
+    _end = strax.find_splittable_end(new_buffer)
+    outputs = []
+    out_buffer = []
+    for i, chunk in enumerate(new_buffer):
+        output, to_buffer = chunk.split(t=_end, allow_early_split=False)
+        outputs.append(output)
+        out_buffer.append(to_buffer)
+    
+    return tuple(out_buffer), tuple(outputs)
 
-    _end = min([x.end for x in input_buffer])
-    # print(f"end of chunk {new_chunks[0]} set to {_end}")
-    output = list(new_chunks)
-    new_buffer = list(new_chunks)
-    for _end in range(_end, _end-1000000, -1000):
-        for i, chunk in enumerate(input_buffer):
-            output[i], new_buffer[i] = chunk.split(
-                                            t=_end,
-                                            allow_early_split=True)
-        if len(set([x.end for x in output]))==1:
-            break
-    return tuple([chunk_i+1]+new_buffer), tuple([chunk_i]+output)
+def count_chunks(x , y):
+    if not y:
+        return -1, ()
+    return x+1, (x, y)
 
 @export
 class Plugin:
@@ -529,35 +527,45 @@ class Plugin:
 
     def compute(self, **kwargs):
         raise NotImplementedError
+    
+    def stream_computer(self):
+        def stream_compute(args, **kwargs):
+            if isinstance(args, strax.Chunk):
+                kwargs = {args.data_type: args}
+            else:
+                kwargs = {c.data_type: c for c in args}
+            # print(self.__class__.__name__, ": ", kwargs)
+            inputs_merged = {kind: strax.Chunk.merge([kwargs[d] for d in deps_of_kind])
+                                for kind, deps_of_kind in self.dependencies_by_kind().items()}
+                            
+            result = self.do_compute(**inputs_merged)
 
-    def stream_compute(self, args, **kwargs):
-        # kwargs = {"chunk_i": kwargs.get("chunk_i", None)}
-        chunk_i = args[0]
-        # print(kwargs["chunk_i"])
-        for chunk in args[1:]:
-            if (chunk is not None) and (chunk.data_type in self.depends_on):
-                kwargs[chunk.data_type] = chunk
-
-        inputs_merged = {kind: strax.Chunk.merge([kwargs[d] for d in deps_of_kind])
-                            for kind, deps_of_kind in self.dependencies_by_kind().items()}
-
-        result = self.do_compute(chunk_i=chunk_i, **inputs_merged)
-        if not isinstance(result, dict):
-            result = {result.data_type: result}
-
-        return result
+            return result
+        stream_compute.__name__ = f"Compute {self.__class__.__name__}"
+        return stream_compute
 
     def stream(self, *upstreams, dask=None, buffer=5):
         import streamz
+        
         if dask:
             dask = self.parallel
-        
-        stream = streamz.zip(*upstreams, stream_name="Merge dependecies")\
-                        .accumulate(align_chunks, returns_state=True, start=(0,), stream_name="Align by Time")
         if dask:
-            stream = stream.scatter().map(self.stream_compute).buffer(buffer).gather()
+            upstreams = [up.scatter() if not isinstance(up, streamz.DaskStream) else up for up in upstreams]
+            zipper = streamz.dask.zip
+            # zipper = strax.streamz.zip_dask_chunks
         else:
-            stream = stream.map(self.stream_compute)
+            upstreams = [up.gather() if isinstance(up, streamz.DaskStream) else up for up in upstreams]
+            zipper = streamz.zip
+            # zipper = strax.streamz.zip_chunks
+        if len(upstreams)>1:
+            stream = zipper(*upstreams).accumulate(
+                align_chunks, start=tuple([None for dep in self.depends_on]), pure=False, returns_state=True,)
+        else:
+            stream = upstreams[0]
+
+        if isinstance(stream, streamz.DaskStream) and not dask:
+            stream = stream.buffer(buffer).gather()
+        stream = stream.map(self.stream_computer(), pure=False)
         return stream
 
 ##
