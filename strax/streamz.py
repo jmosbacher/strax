@@ -264,6 +264,24 @@ class zip_dask_chunks(DaskStream, zip_chunks):
         self.state = state
         return self._emit(result, metadata=metadata)
 
+@DaskStream.register_api()
+class actor_map(DaskStream):
+    def __init__(self, upstream, actor, method_name, *args, **kwargs):
+        self.method_name = method_name
+        self.kwargs = kwargs
+        self.args = args
+        self.actors = itertools.cycle(actors)
+        DaskStream.__init__(self, upstream)
+        
+    def update(self, x, who=None, metadata=None):
+        actor = next(self.actors)
+        result = getattr(actor, self.method_name)(x, *self.args, **self.kwargs)
+        return self._emit(result, metadata=metadata)
+@strax.export
+class StreamChunk(strax.Chunk):
+    def __init__(self, *args, exception=None, **kwargs):
+        self.exception = exception
+        super().__init__( *args, **kwargs)
 # class ChunkBuffer:
 #     def __init__(self):
 #         self.chunks = {}
