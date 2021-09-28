@@ -10,12 +10,11 @@ class chunk_by_time(Stream):
     """
     _graphviz_shape = 'diamond'
 
-    def __init__(self, upstream, dt, overlap=0, **kwargs):
+    def __init__(self, upstream, dt: int, overlap: int=0, **kwargs):
         self.buffer = None
         self.metadata_buffer = {}
-        self.dt = dt
-        self.overlap = overlap
-        self.t_emitted = -1
+        self.dt = int(dt)
+        self.overlap = int(overlap)
         kwargs["ensure_io_loop"] = True
         Stream.__init__(self, upstream, **kwargs)
 
@@ -33,15 +32,23 @@ class chunk_by_time(Stream):
     def cb(self):
         while True:
             if self.buffer is None:
+                yield gen.sleep(0.1)
                 continue
             dt = self.dt+self.overlap
-            if (self.buffer.end-self.buffer.start)<dt:
-                continue
-            temit = self.buffer.end-dt
-            self.buffer,x = self.buffer.split(temit, allow_overlap=True)
-            metadata = [m for t,m in self.metadata_buffer.items() if t>=temit]
+#             if (self.buffer.end-self.buffer.start)<dt:
+#                 yield gen.sleep(0.1)
+#                 continue
+            temit = self.buffer.start+dt
+            if temit>self.buffer.end:
+                x = self.buffer
+                self.buffer = None
+            else:
+                x, _ = self.buffer.split(temit, allow_overlap=True)
+                _, self.buffer = self.buffer.split(temit-self.overlap, allow_overlap=True)
+            metadata = [m for t,m in self.metadata_buffer.items() if t<=temit]
             if len(metadata)==1:
                 metadata = metadata[0]
             yield self._emit(x, metadata=metadata if metadata else None)
             if metadata:
                 self._release_refs(metadata)
+                
