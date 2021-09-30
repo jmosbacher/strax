@@ -22,7 +22,11 @@ from .processor import *
 from .context import *
 from .run_selection import *
 from .corrections import *
-
+try:
+    from .streamz_integration import *
+    HAS_STREAMZ = True
+except ImportError:
+    HAS_STREAMZ = False
 from .io import *
 
 from strax.processing.data_reduction import *

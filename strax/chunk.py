@@ -79,12 +79,12 @@ class Chunk:
             # Check the last 500 samples (arbitrary number) as sanity check
             data_ends_at = strax.endtime(self.data[-500:]).max()
 
-            if data_starts_at < self.start:
-                raise ValueError(f"Attempt to create chunk {self} "
-                                 f"whose data starts early at {data_starts_at}")
-            if data_ends_at > self.end:
-                raise ValueError(f"Attempt to create chunk {self} "
-                                 f"whose data ends late at {data_ends_at}")
+            # if data_starts_at < self.start:
+            #     raise ValueError(f"Attempt to create chunk {self} "
+            #                      f"whose data starts early at {data_starts_at}")
+            # if data_ends_at > self.end:
+            #     raise ValueError(f"Attempt to create chunk {self} "
+            #                      f"whose data ends late at {data_ends_at}")
 
         # This is commented out for performance, but it's perhaps useful
         # when debugging
@@ -240,6 +240,8 @@ class Chunk:
                              f"ranges: {tranges}")
         start, end = tranges[0]
 
+        strict_bounds = all([c.strict_bounds for c in chunks])
+
         data = strax.merge_arrs(
             [c.data for c in chunks],
             # Make sure dtype field order is consistent, regardless of the
@@ -248,6 +250,7 @@ class Chunk:
                 [c.dtype
                  for c in sorted(chunks,
                                  key=lambda x: x.data_type)]))
+        
 
         return cls(
             start=start,
@@ -257,6 +260,7 @@ class Chunk:
             data_kind=data_kind,
             run_id=run_id,
             data=data,
+            strict_bounds=strict_bounds,
             target_size_mb=max([c.target_size_mb for c in chunks]))
 
     @classmethod
@@ -287,7 +291,7 @@ class Chunk:
         subruns = _update_subruns_in_chunk(chunks)
         for c in chunks:
             if not c.strict_bounds:
-                c.data = c.data[c.data['time']>=c.start]
+                c.data = c.data[(c.data['time']>=c.start)&(c.data['time']<c.end)]
 
         prev_end = 0
         for c in chunks:
@@ -309,6 +313,7 @@ class Chunk:
             target_size_mb=max([c.target_size_mb for c in chunks]),
             strict_bounds=all([c.strict_bounds for c in chunks]))
 
+    
 @export
 def continuity_check(chunk_iter):
     """Check continuity of chunks yielded by chunk_iter as they are yielded"""

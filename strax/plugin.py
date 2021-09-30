@@ -149,6 +149,28 @@ class Plugin:
     def __deepcopy__(self):
         return self.__copy__(_deep_copy=True)
 
+    def __getstate__(self):
+        attrs = set([
+                'dtype',
+                'run_id',
+                'depends_on',
+                'provides',
+                'lineage',
+                'takes_config',
+                '__version__',
+                'config',
+                'compute_takes_start_end',
+                'compute_takes_chunk_i',
+                'data_kind'])
+        attrs.update(self.__dict__.keys())
+        
+        return {attr: getattr(self, attr) for attr in attrs if attrs not in ['log', 'nn']}
+
+    def __setstate__(self, state):
+        for k,v in state.items():
+            setattr(self, k, v)
+        self.setup()
+
     def fix_dtype(self):
         try:
             # Infer dtype should always precede self.dtype (e.g. due to
