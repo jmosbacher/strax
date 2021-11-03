@@ -1,7 +1,9 @@
+from _typeshed import OpenTextMode
 import builtins
 import typing as ty
 import numbers
 from immutabledict import immutabledict
+import warnings
 
 import strax
 export, __all__ = strax.exporter()
@@ -63,6 +65,7 @@ class Option:
                  child_option: bool = False,
                  parent_option_name: str = None,
                  track: bool = True,
+                 infer_dtype = OMITTED,
                  help: str = ''):
         """
         :param name: Option identifier
@@ -115,8 +118,14 @@ class Option:
                 self.default_by_run is not OMITTED]) > 1:
             raise RuntimeError(f"Tried to specify more than one default "
                                f"for option {self.name}.")
+        if infer_dtype is OMITTED:
+            warnings.warn(f'You are setting a default value for config {name} but not \
+                specifying a type. In the future the type will be inferred from \
+                the default value which will result in an error if this config \
+                is set to a different type.')
 
-        if type is OMITTED and default is not OMITTED:
+        if infer_dtype and type is OMITTED and default is not OMITTED:
+            
             for ntype in [numbers.Integral, numbers.Number]:
                 # first check if its a number otherwise numpy numbers
                 # will fail type checking when checked against int and float.
