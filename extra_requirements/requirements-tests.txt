@@ -12,7 +12,7 @@ lz4==3.1.10
 memory_profiler==0.58.0
 mongomock==3.23.0
 npshmex==0.2.1
-numba==0.54.1
+numba==0.55.1
 numexpr==2.7.3
 numpy==1.20.2
 pandas==1.3.2
