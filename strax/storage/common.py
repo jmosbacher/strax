@@ -193,6 +193,26 @@ class StorageFrontend:
             executor=executor,
             chunk_number=chunk_number)
 
+    def dask_array(self,  
+                key: DataKey,
+                time_range=None,
+                allow_incomplete=False,
+                fuzzy_for=tuple(),
+                fuzzy_for_options=tuple(),
+                chunk_number=None,
+                return_metadata=False):
+
+        backend, backend_key = self.find(key,
+                                         write=False,
+                                         allow_incomplete=allow_incomplete,
+                                         fuzzy_for=fuzzy_for,
+                                         fuzzy_for_options=fuzzy_for_options)
+
+        return self._get_backend(backend).dask_array(backend_key,
+                                                     time_range=time_range,
+                                                     chunk_number=chunk_number,
+                                                     return_metadata=return_metadata)
+        
     def saver(self, key, metadata, **kwargs):
         """Return saver for data described by DataKey."""
         backend, backend_key = self.find(key, write=True)
@@ -491,6 +511,93 @@ class StorageBackend:
             else:
                 yield executor.submit(self._read_and_format_chunk,
                                       **read_chunk_kwargs)
+
+    def dask_array(self,
+               backend_key,
+               time_range=None,
+               chunk_number=None,
+               return_metadata=False):
+        '''Load selection of chunks as dask array
+        '''
+        import dask
+        import dask.array as da
+
+        metadata = self.get_metadata(backend_key)
+
+        if 'strax_version' in metadata:
+            v_old = metadata['strax_version']
+            if version.parse(v_old) < version.parse('0.9.0'):
+                raise strax.DataNotAvailable(
+                    f"Cannot load data at {backend_key}: "
+                    f"it was created with strax {v_old}, "
+                    f"but you have strax {strax.__version__}. ")
+        else:
+            warnings.warn(f"Data at {backend_key} does not say what strax "
+                          "version it was generated with. This means it is "
+                          "corrupted, or very, very old. Probably "
+                          "we cannot load this.")
+
+        # 'start' and 'end' are not required, to allow allow_incomplete
+        required_fields = (
+            'run_id data_type data_kind dtype compressor').split()
+        missing_fields = [x for x in required_fields if x not in metadata]
+        if len(missing_fields):
+            raise strax.DataNotAvailable(
+                f"Cannot load data at {backend_key}: metadata is "
+                f"missing the required fields {missing_fields}. ")
+
+        if not len(metadata['chunks']):
+            raise ValueError(
+                f"Cannot load data at {backend_key}, it has no chunks!")
+
+        dtype = literal_eval(metadata['dtype'])
+
+        required_chunk_metadata_fields = 'start end run_id'.split()
+
+        read_delayed = dask.delayed(self._read_chunk)
+        chunks = []
+        for i, chunk_info in enumerate(strax.iter_chunk_meta(metadata)):
+
+            missing_fields = [x for x in required_chunk_metadata_fields
+                              if x not in chunk_info]
+            if len(missing_fields):
+                raise ValueError(
+                    f"Error reading chunk {i} of {metadata['dtype']} " 
+                    f"of {metadata['run_d']} from {backend_key}: "
+                    f"chunk metadata is missing fields {missing_fields}")
+
+            # Chunk number constraint
+            if chunk_number is not None:
+                if i != chunk_number:
+                    continue
+
+            # Time constraint
+            if time_range:
+                if (chunk_info['end'] <= time_range[0]
+                        or time_range[1] <= chunk_info['start']):
+                    # Chunk does not cover any part of range
+                    continue
+
+            if chunk_info['n'] == 0:
+                # No data, no need to load
+                continue
+
+            delayed = read_delayed(backend_key,
+                                   chunk_info=chunk_info,
+                                   dtype=dtype,
+                                   compressor=metadata['compressor'])
+
+            chunk = da.from_delayed(delayed, 
+                                    shape=(chunk_info['n'],), 
+                                    dtype=dtype)
+
+            chunks.append(chunk)
+        darray  = da.concatenate(chunks, axis=0)
+        
+        if return_metadata:
+            return darray, metadata
+
+        return darray
 
     def _read_and_format_chunk(self,
                                *,
