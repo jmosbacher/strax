@@ -1,5 +1,7 @@
 import datetime
+from itertools import product
 import logging
+from unittest import result
 import warnings
 import fnmatch
 from functools import partial
@@ -13,6 +15,8 @@ import types
 from collections import defaultdict
 from immutabledict import immutabledict
 from enum import IntEnum
+
+from strax.utils import to_str_tuple
 
 
 export, __all__ = strax.exporter()
@@ -781,6 +785,33 @@ class Context:
         """
         return sorted(self.storage, key=lambda x: x.storage_type)
 
+    def _get_dask_array_for(self, key, time_range=None, chunk_number=None):
+        """Create a dask array from delayed objects that loads data when accessed.
+
+        :param key: strax.DataKey
+        :param time_range: 2-length arraylike of (start, exclusive end) of row
+            numbers to get. Default is None, which means get the entire run.
+        :param chunk_number: number of the chunk for data specified by
+            strax.DataKey. This chunck is loaded exclusively.
+        :return: dask.array.Array
+        """
+
+        for sf in self._sorted_storage:
+            try:
+                # Partial is clunky... but allows specifying executor later
+                # Since it doesn't run until later, we must do a find now
+                # that we can still handle DataNotAvailable
+                sf.find(key, **self._find_options)
+                return sf.dask_array(
+                               key,
+                               time_range=time_range,
+                               chunk_number=chunk_number,
+                               **self._find_options)
+            except strax.DataNotAvailable:
+                continue
+
+        return None
+
     def _get_partial_loader_for(self, key, time_range=None, chunk_number=None):
         """
         Get partial loaders to allow loading data later
@@ -1441,6 +1472,31 @@ class Context:
 
         results = np.concatenate(results)
         return results
+
+    def get_dask(self, 
+                run_ids: ty.Union[str, tuple, list],
+                targets,
+                **kwargs) -> np.ndarray:
+        """
+        create dask array for run_id and return as numpy array
+        """
+        import dask.array as da
+
+        results = defaultdict(list)
+        run_ids = to_str_tuple(run_ids)
+        targets = to_str_tuple(targets)
+        for run_id, target in product(run_ids, targets):
+            key = self.key_for(run_id, target)
+            arr = self._get_dask_array_for(key, **kwargs)
+            if arr is not None:
+                results[target].append(arr)
+        
+        results = {k: da.concatenate(v) for k,v in results.items() if len(v)}
+        if len(targets) == 1:
+            return results.get(targets[0], None)
+
+        return results
+
 
     def accumulate(self,
                    run_id: ty.Union[str, tuple, list],
