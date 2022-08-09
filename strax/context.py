@@ -1474,20 +1474,27 @@ class Context:
         return results
 
     def get_dask(self, 
-                run_ids: ty.Union[str, tuple, list],
+                run_id: ty.Union[str, tuple, list],
                 targets,
-                **kwargs) -> np.ndarray:
+                **kwargs) -> "dask.array.Array":
         """
-        create dask array for run_id and return as numpy array
+        create dask array for run_ids and return as numpy array
         """
         import dask.array as da
 
+        self.make(run_id, targets, **kwargs)
+
         results = defaultdict(list)
-        run_ids = to_str_tuple(run_ids)
+        run_id = to_str_tuple(run_id)
         targets = to_str_tuple(targets)
-        for run_id, target in product(run_ids, targets):
-            key = self.key_for(run_id, target)
-            arr = self._get_dask_array_for(key, **kwargs)
+
+        get_kwargs = {'time_range': kwargs.get('time_range' ,None),
+                      'chunk_number': kwargs.get('time_range' ,None),
+                    }
+
+        for rid, target in product(run_id, targets):
+            key = self.key_for(rid, target)
+            arr = self._get_dask_array_for(key, **get_kwargs)
             if arr is not None:
                 results[target].append(arr)
         
@@ -1496,7 +1503,6 @@ class Context:
             return results.get(targets[0], None)
 
         return results
-
 
     def accumulate(self,
                    run_id: ty.Union[str, tuple, list],
